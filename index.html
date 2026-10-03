@@ -312,6 +312,12 @@ table.arlei-tabela tr.arlei-feriado td{background:#C9E2F7}
   table.arlei-tabela{ page-break-inside:avoid }
 }
 @page arlei-paisagem{ size:A4 landscape; margin:8mm; }
+@page a4-retrato{ size:A4 portrait; margin:0; }
+@media print{
+  .impressao-a4{ page:a4-retrato; width:210mm; height:296.5mm; overflow:hidden; page-break-after:always; break-after:page; }
+  .impressao-a4:last-child{ page-break-after:auto; break-after:auto; }
+  .impressao-a4 img{ width:210mm; height:297mm; display:block; }
+}
 </style>
 </head>
 <body>
@@ -986,14 +992,30 @@ table.arlei-tabela tr.arlei-feriado td{background:#C9E2F7}
     <div id="lr-lista"></div>
     <div class="footer-actions" style="align-items:flex-end">
       <button class="btn btn-outline btn-sm" onclick="lrLimpar()">Limpar lista</button>
-      <button class="btn btn-primary btn-sm" onclick="lrGerarPDF()">Gerar PDF dos recibos</button>
+      <button class="btn btn-primary btn-sm" onclick="lrGerarPDF()">Imprimir recibos</button>
     </div>
     <div class="section-label" style="margin-top:1.2rem">Capa da pasta</div>
     <div class="footer-actions" style="align-items:flex-end;margin-top:0">
-      <div class="form-row" style="margin:0"><label>Competência da capa</label><input type="month" id="lr-capa-competencia"></div>
-      <button class="btn btn-outline btn-sm" onclick="lrGerarCapa()">Gerar capa da competência</button>
+      <div class="form-row" style="margin:0"><label>Tipo de capa</label>
+        <select id="lr-capa-tipo" onchange="lrAtualizarTipoCapa()"><option value="competencia">Competência</option><option value="nome">Nome</option></select></div>
+      <div class="form-row" style="margin:0" id="lr-capa-campo-comp"><label>Competência da capa</label><input type="month" id="lr-capa-competencia"></div>
+      <div class="form-row" style="margin:0;display:none;flex:1;min-width:220px" id="lr-capa-campo-nome"><label>Nome na capa</label><input type="text" id="lr-capa-nome" list="lr-lista-colab" placeholder="Digite ou escolha"></div>
+      <div class="form-row" style="margin:0;display:none;flex:1;min-width:180px" id="lr-capa-campo-sub"><label>Linha de baixo (opcional)</label><input type="text" id="lr-capa-sub" placeholder="Ex: cargo, setor, ano"></div>
+      <button class="btn btn-outline btn-sm" onclick="lrGerarCapa()">Imprimir capa</button>
     </div>
     <div class="helptext" id="lr-status"></div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="step">H</span> Reimprimir recibos</div>
+    <div class="helptext" style="margin-top:0">Todo recibo impresso (daqui ou do Fechamento Total) fica guardado. Filtre, marque os que quiser e imprima de novo, 3 por folha.</div>
+    <div class="footer-actions" style="align-items:flex-end;margin-top:.4rem">
+      <div class="form-row" style="margin:0"><label>Competência</label><input type="month" id="lr-hist-comp" onchange="lrRenderHistorico()"></div>
+      <div class="form-row" style="margin:0;flex:1;min-width:200px"><label>Colaborador</label><input type="text" id="lr-hist-busca" placeholder="Buscar pelo nome" oninput="lrRenderHistorico()"></div>
+      <button class="btn btn-outline btn-sm" onclick="lrCarregarHistorico()">Atualizar</button>
+      <button class="btn btn-primary btn-sm" onclick="lrReimprimirSelecionados()">Imprimir selecionados</button>
+    </div>
+    <div id="lr-historico" style="margin-top:.8rem"></div>
+    <div class="helptext" id="lr-hist-status"></div>
   </div>
 </div>
 
@@ -7194,6 +7216,7 @@ function lrIniciar(){
   if(capa && !capa.value) capa.value = comp ? comp.value : hojeISO().slice(0,7);
   lrRecalcular();
   lrRenderLista();
+  lrCarregarHistorico();
 }
 
 function lrPreencherDoCadastro(){
@@ -7272,6 +7295,73 @@ function lrAdicionar(){
   lrRenderLista();
 }
 
+let lrHistorico = [];   // [{id, criadoEm, origem, idx, recibo}]
+
+async function lrCarregarHistorico(){
+  const el = lrEl('lr-historico');
+  if(!el) return;
+  try{
+    const snap = await db.collection('recibos').get();
+    const linhas = [];
+    snap.forEach(d=>{
+      const v = d.data();
+      (v.recibos || []).forEach((g, idx)=> linhas.push({ id: d.id, criadoEm: v.criadoEm || '', origem: v.origem || '', idx, recibo: reciboDoGravado(g) }));
+    });
+    linhas.sort((a,b)=> (b.criadoEm||'').localeCompare(a.criadoEm||'') || a.idx - b.idx);
+    lrHistorico = linhas;
+  }catch(e){
+    el.innerHTML = '<div class="empty-state">Não consegui carregar o histórico.</div>';
+    return;
+  }
+  lrRenderHistorico();
+}
+
+function lrHistoricoFiltrado(){
+  const comp = (lrEl('lr-hist-comp') || {}).value || '';
+  const busca = normalizarNomeConf((lrEl('lr-hist-busca') || {}).value || '');
+  return lrHistorico.filter(h=> (!comp || h.recibo.competencia === comp)
+    && (!busca || normalizarNomeConf(h.recibo.nome || '').includes(busca)));
+}
+
+function lrRenderHistorico(){
+  const el = lrEl('lr-historico');
+  if(!el) return;
+  const lista = lrHistoricoFiltrado();
+  if(!lista.length){ el.innerHTML = '<div class="empty-state">Nenhum recibo guardado com esse filtro.</div>'; return; }
+  const quando = iso=>{ const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); };
+  el.innerHTML = `<div class="table-wrap"><table style="table-layout:auto;width:100%">
+    <thead><tr><th><input type="checkbox" onchange="document.querySelectorAll('.lr-hist-chk').forEach(c=>c.checked=this.checked)"></th>
+      <th>Impresso em</th><th>Origem</th><th>Colaborador</th><th>Recibo</th><th>Competência</th><th>Total</th><th></th></tr></thead>
+    <tbody>${lista.map(h=>{
+      const r = h.recibo, chave = h.id + ':' + h.idx;
+      return `<tr>
+        <td><input type="checkbox" class="lr-hist-chk" value="${chave}"></td>
+        <td>${quando(h.criadoEm)}</td>
+        <td>${h.origem === 'fechamento' ? 'Fechamento' : 'Avulso'}</td>
+        <td>${escaparHtml(r.nome || '')}</td>
+        <td>${escaparHtml((r.titulo || 'Recibo de pagamento').replace('Recibo de ',''))}</td>
+        <td>${(r.competencia||'').slice(5,7)}/${(r.competencia||'').slice(0,4)}</td>
+        <td><b>${fmtMoeda(Number(r.totalReceber)||0)}</b></td>
+        <td><button class="btn btn-outline btn-sm" onclick="lrReimprimir('${chave}')">Reimprimir</button></td>
+      </tr>`; }).join('')}</tbody></table></div>`;
+}
+
+function lrReciboDaChave(chave){
+  const h = lrHistorico.find(x=> (x.id + ':' + x.idx) === chave);
+  return h ? h.recibo : null;
+}
+function lrReimprimir(chave){
+  const r = lrReciboDaChave(chave);
+  if(r) imprimirRecibos([r]);
+}
+function lrReimprimirSelecionados(){
+  const st = lrEl('lr-hist-status');
+  const recibos = [...document.querySelectorAll('.lr-hist-chk:checked')].map(c=>lrReciboDaChave(c.value)).filter(Boolean);
+  if(!recibos.length){ st.style.color = 'var(--vermelho)'; st.textContent = 'Marque pelo menos um recibo.'; return; }
+  st.style.color = ''; st.textContent = '';
+  imprimirRecibos(recibos);
+}
+
 function lrRemover(idx){ lrRecibos.splice(idx, 1); lrRenderLista(); }
 function lrLimpar(){ lrRecibos = []; lrRenderLista(); lrEl('lr-status').textContent = ''; }
 
@@ -7293,18 +7383,40 @@ function lrRenderLista(){
 function lrGerarPDF(){
   const st = lrEl('lr-status');
   if(!lrRecibos.length){ st.style.color = 'var(--vermelho)'; st.textContent = 'Adicione pelo menos um recibo à lista.'; return; }
-  baixarPdfRecibos(lrRecibos, 'recibos_avulsos.pdf');
+  const lista = lrRecibos.slice();
+  imprimirRecibos(lista);
+  salvarHistoricoRecibos('avulso', lista).then(()=>lrCarregarHistorico());
   st.style.color = 'var(--verde)';
-  st.textContent = lrRecibos.length + ' recibo(s) gerado(s).';
+  st.textContent = lista.length + ' recibo(s) enviado(s) para impressão e guardado(s) no histórico.';
+}
+
+function lrAtualizarTipoCapa(){
+  const nome = lrEl('lr-capa-tipo').value === 'nome';
+  lrEl('lr-capa-campo-comp').style.display = nome ? 'none' : '';
+  lrEl('lr-capa-campo-nome').style.display = nome ? '' : 'none';
+  lrEl('lr-capa-campo-sub').style.display = nome ? '' : 'none';
 }
 
 function lrGerarCapa(){
   const st = lrEl('lr-status');
+  if(lrEl('lr-capa-tipo').value === 'nome'){
+    const nome = (lrEl('lr-capa-nome').value || '').trim();
+    if(!nome){ st.style.color = 'var(--vermelho)'; st.textContent = 'Digite o nome da capa.'; return; }
+    let sub = (lrEl('lr-capa-sub').value || '').trim();
+    if(!sub){
+      const c = colaboradoresManual.find(x=> normalizarNomeConf(x.nome) === normalizarNomeConf(nome));
+      if(c && c.funcao) sub = c.funcao;
+    }
+    gerarCapaNome(nome, sub);
+    st.style.color = 'var(--verde)';
+    st.textContent = 'Capa de ' + nome + ' enviada para impressão.';
+    return;
+  }
   const comp = lrEl('lr-capa-competencia').value;
   if(!comp){ st.style.color = 'var(--vermelho)'; st.textContent = 'Escolha a competência da capa.'; return; }
   gerarCapaCompetencia(comp);
   st.style.color = 'var(--verde)';
-  st.textContent = 'Capa de ' + comp.slice(5,7) + '/' + comp.slice(0,4) + ' gerada.';
+  st.textContent = 'Capa de ' + comp.slice(5,7) + '/' + comp.slice(0,4) + ' enviada para impressão.';
 }
 
 function statusRecibo(txt, cor){
@@ -7436,7 +7548,7 @@ function confirmarRecibosComDias(){
   emitirRecibos(marcados);
 }
 
-function baixarPdfRecibos(recibos, nomeArquivo){
+function montarPdfRecibos(recibos){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
   const logo = (typeof LOGO_PAO_TRADICAO_B64 !== 'undefined') ? LOGO_PAO_TRADICAO_B64
@@ -7456,8 +7568,74 @@ function baixarPdfRecibos(recibos, nomeArquivo){
       doc.setLineDashPattern([], 0);
     }
   });
+  return doc;
+}
 
-  doc.save(nomeArquivo);
+function baixarPdfRecibos(recibos, nomeArquivo){
+  montarPdfRecibos(recibos).save(nomeArquivo);
+}
+
+// Abre a tela de impressão do navegador (igual à das ocorrências), sem baixar arquivo:
+// cada página do PDF vira uma imagem A4 na área de impressão
+async function imprimirDocPdf(doc){
+  const area = document.getElementById('area-impressao');
+  const buf = doc.output('arraybuffer');
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let html = '';
+  for(let n = 1; n <= pdf.numPages; n++){
+    const pagina = await pdf.getPage(n);
+    const vp = pagina.getViewport({ scale: 3 });
+    const canvas = document.createElement('canvas');
+    canvas.width = vp.width; canvas.height = vp.height;
+    await pagina.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    html += `<div class="impressao-a4"><img src="${canvas.toDataURL('image/jpeg', 0.92)}" alt=""></div>`;
+  }
+  area.innerHTML = html;
+  const imgs = [...area.querySelectorAll('img')];
+  await Promise.all(imgs.map(img=> img.complete ? Promise.resolve() : new Promise(r=>{ img.onload = r; img.onerror = r; })));
+  // folha A4 em pé, sem margem, só enquanto imprime os recibos
+  let estilo = document.getElementById('estilo-impressao-a4');
+  if(!estilo){
+    estilo = document.createElement('style');
+    estilo.id = 'estilo-impressao-a4';
+    document.head.appendChild(estilo);
+  }
+  estilo.textContent = '@page{ size:A4 portrait; margin:0; }';
+  const limpar = ()=>{ estilo.textContent = ''; window.removeEventListener('afterprint', limpar); };
+  window.addEventListener('afterprint', limpar);
+  window.print();
+}
+
+async function imprimirRecibos(recibos){
+  await imprimirDocPdf(montarPdfRecibos(recibos));
+}
+
+/* ---------- histórico para reimpressão ---------- */
+// Firestore não aceita lista dentro de lista: as linhas viram objetos ao gravar
+function reciboParaGravar(r){
+  const n = normalizarRecibo(r);
+  const linhas = l=> (l || []).map(x=>({ r: x[0], q: (x[1] === undefined ? null : x[1]), v: x[2] }));
+  return JSON.parse(JSON.stringify(Object.assign({}, n, {
+    dataTexto: n.dataTexto || dataAssinaturaPorExtenso(n.competencia),
+    lancamentos: linhas(n.lancamentos),
+    descontos: n.descontos ? linhas(n.descontos) : null,
+    linhasFeriado: null
+  })));
+}
+function reciboDoGravado(g){
+  const linhas = l=> (l || []).map(x=>[x.r, x.q, x.v]);
+  return Object.assign({}, g, { lancamentos: linhas(g.lancamentos), descontos: g.descontos ? linhas(g.descontos) : null });
+}
+async function salvarHistoricoRecibos(origem, recibos){
+  try{
+    await db.collection('recibos').add({
+      criadoEm: new Date().toISOString(),
+      usuario: (auth.currentUser && auth.currentUser.email) || '',
+      origem,
+      competencia: (recibos[0] && recibos[0].competencia) || '',
+      recibos: recibos.map(reciboParaGravar)
+    });
+  }catch(e){ console.error('Não consegui guardar o histórico de recibos', e); }
 }
 
 // Capa para a pasta de recibos, no mesmo tamanho de um recibo (1/3 da folha A4),
@@ -7513,7 +7691,70 @@ function gerarCapaCompetencia(mesRef){
   doc.setDrawColor(LN[0],LN[1],LN[2]); doc.setLineWidth(0.21); doc.setLineDashPattern([1,1], 0);
   doc.line(0, H, W, H); doc.setLineDashPattern([], 0);
 
-  doc.save('capa_recibos_' + mesRef + '.pdf');
+  imprimirDocPdf(doc);
+  return true;
+}
+
+// Capa com nome (ex.: pasta de um colaborador), mesmo tamanho e visual da capa de competência
+function gerarCapaNome(nome, subtitulo){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+  const temInter = registrarFontesRecibo(doc);
+  const F = temInter
+    ? { R:'InterR', M:'InterM', S:'InterS', B:'InterB' }
+    : { R:'helvetica', M:'helvetica', S:'helvetica', B:'helvetica' };
+  const AZ=[19,33,94], OU=[239,173,76], CR=[245,240,220], CI=[107,113,144], BR=[255,255,255], LN=[217,212,192];
+  const W = 210, H = 99, PX = 72, CX = (PX + W) / 2, LX = PX / 2;
+  const fonte = (p, tam, cor)=>{ doc.setFont(F[p], (!temInter && (p==='S'||p==='B')) ? 'bold' : 'normal'); doc.setFontSize(tam); doc.setTextColor(cor[0],cor[1],cor[2]); };
+  const centro = (txt, cx, y, esp)=>{
+    esp = esp || 0;
+    const w = doc.getTextWidth(txt) + esp * (txt.length - 1);
+    doc.text(txt, cx - w / 2, y, esp ? { charSpace: esp } : undefined);
+  };
+
+  doc.setFillColor(CR[0],CR[1],CR[2]); doc.rect(0, 0, W, H, 'F');
+  doc.setFillColor(AZ[0],AZ[1],AZ[2]); doc.rect(0, 0, PX, H, 'F');
+  doc.setDrawColor(OU[0],OU[1],OU[2]); doc.setLineWidth(1); doc.line(PX, 0, PX, H);
+  doc.setFillColor(BR[0],BR[1],BR[2]); doc.setDrawColor(OU[0],OU[1],OU[2]); doc.setLineWidth(0.8);
+  doc.circle(LX, 38, 22, 'FD');
+  const logo = (typeof LOGO_PAO_TRADICAO_B64 !== 'undefined') ? LOGO_PAO_TRADICAO_B64
+    : ((document.querySelector('link[rel="apple-touch-icon"]') || {}).href || null);
+  if(logo){ try{ doc.addImage(logo, 'PNG', LX - 17, 38 - 16, 34, 32); }catch(e){} }
+  fonte('M', 7, OU); centro('PÃO & TRADIÇÃO', LX, 72, 1.4);
+  fonte('R', 7, BR); centro('Padaria e Confeitaria', LX, 78);
+  fonte('R', 5.5, LN); centro('MAGIW Panificadora de Friburgo LTDA', LX, 90);
+
+  fonte('M', 8.5, CI); centro('RECIBOS DE PAGAMENTO', CX, 20, 1.4);
+  doc.setDrawColor(OU[0],OU[1],OU[2]); doc.setLineWidth(0.7); doc.line(CX - 10, 24, CX + 10, 24);
+
+  // nome grande: tenta uma linha; se não couber, quebra em duas e diminui a fonte
+  const txt = String(nome).toUpperCase();
+  const largura = 124;
+  let tam = 30, linhas = [txt];
+  fonte('B', tam, AZ);
+  while(doc.getTextWidth(txt) > largura && tam > 22){ tam -= 1; fonte('B', tam, AZ); }
+  if(doc.getTextWidth(txt) > largura){
+    tam = 24; fonte('B', tam, AZ);
+    linhas = doc.splitTextToSize(txt, largura);
+    while(linhas.length > 2 && tam > 14){ tam -= 1; fonte('B', tam, AZ); linhas = doc.splitTextToSize(txt, largura); }
+    linhas = linhas.slice(0, 2);
+  }
+  const alt = tam * 0.3528 * 1.15;
+  const y0 = 50 - (linhas.length - 1) * alt / 2;
+  linhas.forEach((l, i)=> centro(l, CX, y0 + i * alt));
+
+  if(subtitulo){
+    let ts = 12; fonte('S', ts, OU);
+    while(doc.getTextWidth(subtitulo) > largura && ts > 8){ ts -= 0.5; fonte('S', ts, OU); }
+    centro(subtitulo, CX, 70);
+  }
+  doc.setDrawColor(AZ[0],AZ[1],AZ[2]); doc.setLineWidth(0.5); doc.line(CX - 30, 80, CX + 30, 80);
+  fonte('R', 7, CI); centro('Arquivo de recibos', CX, 88);
+
+  doc.setDrawColor(LN[0],LN[1],LN[2]); doc.setLineWidth(0.21); doc.setLineDashPattern([1,1], 0);
+  doc.line(0, H, W, H); doc.setLineDashPattern([], 0);
+
+  imprimirDocPdf(doc);
   return true;
 }
 
@@ -7529,11 +7770,13 @@ function emitirRecibos(marcados){
     return;
   }
 
-  baixarPdfRecibos(recibos, 'recibos_' + fechMesRef + '.pdf');
+  recibos.forEach(r=>{ r.dataTexto = r.dataTexto || dataAssinaturaPorExtenso(r.competencia); });
+  imprimirRecibos(recibos);
+  salvarHistoricoRecibos('fechamento', recibos);
   const aviso = semDados.length
     ? ' Ficaram de fora por falta de dados: ' + semDados.join(', ') + '.'
     : '';
-  statusRecibo(recibos.length + ' recibo' + (recibos.length===1?'':'s') + ' gerado' + (recibos.length===1?'':'s') + '.' + aviso,
+  statusRecibo(recibos.length + ' recibo' + (recibos.length===1?'':'s') + ' enviado' + (recibos.length===1?'':'s') + ' para impressão. Ficam guardados em Lançar recibo, para reimprimir.' + aviso,
              semDados.length ? 'var(--ouro)' : 'var(--verde)');
 }
 
